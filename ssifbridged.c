@@ -1,13 +1,9 @@
 /*
- * Daemon forwards requests and receive responses from SSIF over the DBUS
- * IPMI Interface.
- *
  * Copyright 2018 Ampere Computing LLC
- * Author: Chuong Tran <chuong.tran@amperecomputing.com>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
- * You may ossifain a copy of the License at
+ * You may obtain a copy of the License at
  *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -17,11 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
+ */
+
+/*
+ * This is a daemon that forwards requests and receive responses from SSIF over
+ * the D-Bus IPMI Interface.
+ *
  * This daemon is based on btbridged from https://github.com/openbmc/btbridge
  * There is no need to queue messages for SSIF since they should not arrive out
  * of sequence.
- * The timer is still used, as we want to abort 'stuck' commands after an expiry
- * time. Messages that are received out of order are discarded.
+ * The timer is used as we want to abort 'stuck' commands after an expiry time.
+ * Messages that are received out of order are discarded.
  */
 
 #include <assert.h>
@@ -67,8 +69,16 @@ static const char *ssif_bmc_device = "/dev/ipmi-ssif-host";
 #define TIMER_FD 2
 #define TOTAL_FDS 3
 
-#define MSG_OUT(f_, ...) do { if (verbosity != SSIF_LOG_NONE) { ssif_log(LOG_INFO, f_, ##__VA_ARGS__); } } while(0)
-#define MSG_ERR(f_, ...) do { if (verbosity != SSIF_LOG_NONE) { ssif_log(LOG_ERR, f_, ##__VA_ARGS__); } } while(0)
+#define MSG_OUT(f_, ...) do { \
+	if (verbosity != SSIF_LOG_NONE) { \
+		ssif_log(LOG_INFO, f_, ##__VA_ARGS__); \
+	} \
+} while(0)
+#define MSG_ERR(f_, ...) do { \
+	if (verbosity != SSIF_LOG_NONE) { \
+		ssif_log(LOG_ERR, f_, ##__VA_ARGS__); \
+	} \
+} while(0)
 
 struct ipmi_msg {
 	uint8_t netfn;
@@ -87,9 +97,10 @@ struct ssifbridged_context {
 	/* Pointer to sdbus */
 	struct sd_bus *bus;
 
-	/* Tracking variable for a pending message so that if it times out we can
-	 * send a response using the correct LUN, netfn and command to indicate to
-	 * the host that we timed out waiting for a response */
+	/* Tracking variable for a pending message so that if it times out,
+	 * we can send a response using the correct lun, netfn and command to
+	 * indicate to the host that we timed out waiting for a response
+	 */
 	struct ipmi_msg ssif_pending_msg;
 
 	/* Flag to indicate whether we are awaiting a response */
@@ -99,9 +110,9 @@ struct ssifbridged_context {
 static void (*ssif_vlog)(int p, const char *fmt, va_list args);
 static int running = 1;
 static enum {
-   SSIF_LOG_NONE = 0,
-   SSIF_LOG_VERBOSE,
-   SSIF_LOG_DEBUG
+	SSIF_LOG_NONE = 0,
+	SSIF_LOG_VERBOSE,
+	SSIF_LOG_DEBUG
 } verbosity;
 
 static void ssif_log_console(int p, const char *fmt, va_list args)
@@ -116,7 +127,7 @@ static void ssif_log_console(int p, const char *fmt, va_list args)
 	vfprintf(s, fmt, args);
 }
 
-__attribute__((format(printf, 2, 3)))
+	__attribute__((format(printf, 2, 3)))
 static void ssif_log(int p, const char *fmt, ...)
 {
 	va_list args;
@@ -126,7 +137,8 @@ static void ssif_log(int p, const char *fmt, ...)
 	va_end(args);
 }
 
-static struct ipmi_msg *ssif_msg_create(struct ssifbridged_context *context, uint8_t *ssif_data)
+static struct ipmi_msg *ssif_msg_create(struct ssifbridged_context *context,
+		uint8_t *ssif_data)
 {
 	int len;
 
@@ -139,7 +151,8 @@ static struct ipmi_msg *ssif_msg_create(struct ssifbridged_context *context, uin
 	len = ssif_data[0] + 1;
 
 	if (len < 3) {
-		MSG_ERR("Trying to get SSIF message with a short length (%d)\n", len);
+		MSG_ERR("Trying to get SSIF message with a short length (%d)\n",
+				len);
 		return NULL;
 	}
 
@@ -159,20 +172,29 @@ static struct ipmi_msg *ssif_msg_create(struct ssifbridged_context *context, uin
 /*
  * Send request from the SSIF driver
  */
-static int send_received_message_signal(struct ssifbridged_context *context, struct ipmi_msg *req,
-						uint8_t *data, uint8_t data_len)
+static int send_received_message_signal(struct ssifbridged_context *context,
+		struct ipmi_msg *req,
+		uint8_t *data, uint8_t data_len)
 {
 	sd_bus_message *msg = NULL;
 	int r = 0;
 
 	/* Notify sdbus for incoming message */
-	r = sd_bus_message_new_signal(context->bus, &msg, OBJ_NAME, DBUS_NAME, "ReceivedMessage");
+	r = sd_bus_message_new_signal(context->bus,
+			&msg,
+			OBJ_NAME,
+			DBUS_NAME,
+			"ReceivedMessage");
 	if (r < 0) {
 		MSG_ERR("Failed to create signal: %s\n", strerror(-r));
 		return r;
 	}
 
-	r = sd_bus_message_append(msg, "yyyy", req->seq, req->netfn, req->lun, req->cmd);
+	r = sd_bus_message_append(msg, "yyyy",
+			req->seq,
+			req->netfn,
+			req->lun,
+			req->cmd);
 	if (r < 0) {
 		MSG_ERR("Couldn't append to signal: %s\n", strerror(-r));
 		return r;
@@ -185,8 +207,12 @@ static int send_received_message_signal(struct ssifbridged_context *context, str
 		return r;
 	}
 
-	MSG_OUT("Sending dbus signal with seq 0x%02x, netfn 0x%02x, lun 0x%02x, cmd 0x%02x\n",
-			req->seq, req->netfn, req->lun, req->cmd);
+	MSG_OUT("Sending dbus signal with seq 0x%02x, netfn 0x%02x, "
+			"lun 0x%02x, cmd 0x%02x\n",
+			req->seq,
+			req->netfn,
+			req->lun,
+			req->cmd);
 
 	if (verbosity == SSIF_LOG_DEBUG) {
 		int i;
@@ -214,7 +240,7 @@ static int send_received_message_signal(struct ssifbridged_context *context, str
 }
 
 static int method_send_sms_atn(sd_bus_message *msg, void *userdata,
-			       sd_bus_error *ret_error)
+		sd_bus_error *ret_error)
 {
 	int r;
 	struct ssifbridged_context *ssif_fd = userdata;
@@ -226,7 +252,9 @@ static int method_send_sms_atn(sd_bus_message *msg, void *userdata,
 	if (r == -1) {
 		r = errno;
 		MSG_ERR("Couldn't ioctl() to 0x%x, %s: %s\n",
-				ssif_fd->fds[SSIF_FD].fd, SSIF_BMC_PATH, strerror(r));
+				ssif_fd->fds[SSIF_FD].fd,
+				SSIF_BMC_PATH,
+				strerror(r));
 		return sd_bus_reply_method_errno(msg, errno, ret_error);
 	}
 
@@ -238,7 +266,8 @@ static int method_send_sms_atn(sd_bus_message *msg, void *userdata,
 /*
  * Send a response on the SSIF driver
  */
-static int ssif_send_response(struct ssifbridged_context *context, struct ipmi_msg *ssif_resp_msg)
+static int ssif_send_response(struct ssifbridged_context *context,
+		struct ipmi_msg *ssif_resp_msg)
 {
 	uint8_t data[SSIF_MAX_RESP_LEN] = { 0 };
 	int r = 0;
@@ -254,10 +283,12 @@ static int ssif_send_response(struct ssifbridged_context *context, struct ipmi_m
 	/* Handle response message to fit multi-parts read/write */
 	if (ssif_resp_msg->data_len <= 29) {
 		is_multi_parts = 0;
-		MSG_OUT("Response is Single-part with len %d\n", ssif_resp_msg->data_len);
+		MSG_OUT("Response is Single-part with len %d\n",
+				ssif_resp_msg->data_len);
 	} else {
 		is_multi_parts = 1;
-		MSG_OUT("Response is Multi-parts with len %d\n", ssif_resp_msg->data_len);
+		MSG_OUT("Response is Multi-parts with len %d\n",
+				ssif_resp_msg->data_len);
 	}
 
 	/* Handle Single-part response */
@@ -267,27 +298,34 @@ static int ssif_send_response(struct ssifbridged_context *context, struct ipmi_m
 
 		/* Copy response message to data buffer */
 		if (ssif_resp_msg->data_len)
-			memcpy(data + 4, ssif_resp_msg->data, ssif_resp_msg->data_len);
+			memcpy(data + 4, ssif_resp_msg->data,
+					ssif_resp_msg->data_len);
 
 		/* Prepare Header */
-		data[1] = (ssif_resp_msg->netfn << 2) | (ssif_resp_msg->lun & 0x3);
+		data[1] = (ssif_resp_msg->netfn << 2) |
+			(ssif_resp_msg->lun & 0x3);
 		data[2] = ssif_resp_msg->cmd;
 		data[3] = ssif_resp_msg->cc;
 		if (ssif_resp_msg->data_len > sizeof(data) - 4) {
-			MSG_ERR("Response message size (%zu) too big, truncating\n", ssif_resp_msg->data_len);
+			MSG_ERR("Response message size (%zu) too big, "
+					"truncating\n",
+					ssif_resp_msg->data_len);
 			ssif_resp_msg->data_len = sizeof(data) - 4;
 		}
 	} else {
 		/* Handle Multi-parts response */
 		/* Payload for multi-part Read Start
-		 * Per IPMI 2.0 specs, read start have to handle maximum 32 bytes data payload
-		 * special code (00h + 01h) + netfn/lun + cmd + cc + IPMI data = 32
+		 * Per IPMI 2.0 specs, read start have to handle maximum
+		 * 32 bytes data payload
+		 * Special code (00h + 01h) + netfn/lun + cmd + cc +
+		 *                                              IPMI data = 32
 		 */
 		data[0] = 32;
 		/* Prepare Header */
 		data[1] = 0x00; /* Special code */
 		data[2] = 0x01; /* Special code */
-		data[3] = (ssif_resp_msg->netfn << 2) | (ssif_resp_msg->lun & 0x3);
+		data[3] = (ssif_resp_msg->netfn << 2) |
+			(ssif_resp_msg->lun & 0x3);
 		data[4] = ssif_resp_msg->cmd;
 		data[5] = ssif_resp_msg->cc;
 
@@ -295,26 +333,37 @@ static int ssif_send_response(struct ssifbridged_context *context, struct ipmi_m
 		/* Copy response message to data buffer */
 		memcpy(data + 6, ssif_resp_msg->data, block_data_len);
 
-		/* TBD: Handle Middle and End Part */
+		/* TODO: Handle Middle and End Part */
 	}
 
 	/* Write data kernel space via system calls */
 	len = write(context->fds[SSIF_FD].fd, data, data[0] + 1);
 
-        if (len < 0) {
-		MSG_ERR("Failed to write to driver (ret: %d, errno: %d)\n",len, errno);
+	if (len < 0) {
+		MSG_ERR("Failed to write to driver (ret: %d, errno: %d)\n",
+				len,
+				errno);
 		r = -errno;
-        } else if (len != data[0] + 1) {
-		MSG_ERR("Possible short write to %s, desired len: %d, written len: %d\n", SSIF_BMC_PATH, data[0] + 1, len);
+	} else if (len != data[0] + 1) {
+		MSG_ERR("Possible short write to %s, desired len: %d, "
+				"written len: %d\n",
+				SSIF_BMC_PATH,
+				data[0] + 1,
+				len);
 		r = -EINVAL;
 	} else {
-		MSG_OUT("Successfully wrote %d of %d bytes to %s\n", len, data[0] + 1, SSIF_BMC_PATH);
+		MSG_OUT("Successfully wrote %d of %d bytes to %s\n",
+				len,
+				data[0] + 1,
+				SSIF_BMC_PATH);
 	}
 
 	return r;
 }
 
-static int method_send_message(sd_bus_message *msg, void *userdata, sd_bus_error *ret_error)
+static int method_send_message(sd_bus_message *msg,
+		void *userdata,
+		sd_bus_error *ret_error)
 {
 	struct ssifbridged_context *context;
 	sd_bus_message* resp_msg = NULL;
@@ -323,7 +372,9 @@ static int method_send_message(sd_bus_message *msg, void *userdata, sd_bus_error
 
 	context = (struct ssifbridged_context *)userdata;
 	if (!context) {
-		sd_bus_error_set_const(ret_error, "org.openbmc.error", "Internal error");
+		sd_bus_error_set_const(ret_error,
+				"org.openbmc.error",
+				"Internal error");
 		r = -EINVAL;
 		goto done;
 	}
@@ -336,7 +387,8 @@ static int method_send_message(sd_bus_message *msg, void *userdata, sd_bus_error
 
 	if (!context->awaiting_response) {
 		/* We are not expecting a response at this time */
-		MSG_ERR("Response message received when in wrong state. Discarding\n");
+		MSG_ERR("Response message received when in wrong state. "
+				"Discarding\n");
 		r = -EBUSY;
 	} else {
 		uint8_t *data;
@@ -346,22 +398,36 @@ static int method_send_message(sd_bus_message *msg, void *userdata, sd_bus_error
 
 		context->awaiting_response = 0;
 
-		r = sd_bus_message_read(msg, "yyyyy", &seq, &netfn, &lun, &cmd, &cc);
+		r = sd_bus_message_read(msg, "yyyyy",
+				&seq,
+				&netfn,
+				&lun,
+				&cmd,
+				&cc);
 		if (r < 0) {
-			MSG_ERR("Couldn't parse leading bytes of message: %s\n", strerror(-r));
-			sd_bus_error_set_const(ret_error, "org.openbmc.error", "Bad message");
+			MSG_ERR("Couldn't parse leading bytes of message: %s\n",
+					strerror(-r));
+			sd_bus_error_set_const(ret_error,
+					"org.openbmc.error",
+					"Bad message");
 			r = -EINVAL;
 			goto done;
 		}
-		r = sd_bus_message_read_array(msg, 'y', (const void **)&data, &data_sz);
+		r = sd_bus_message_read_array(msg, 'y',
+				(const void **)&data,
+				&data_sz);
 		if (r < 0) {
-			MSG_ERR("Couldn't parse data bytes of message: %s\n", strerror(-r));
-			sd_bus_error_set_const(ret_error, "org.openbmc.error", "Bad message data");
+			MSG_ERR("Couldn't parse data bytes of message: %s\n",
+					strerror(-r));
+			sd_bus_error_set_const(ret_error,
+					"org.openbmc.error",
+					"Bad message data");
 			r = -EINVAL;
 			goto done;
 		}
 
-		MSG_OUT("Received a dbus response for msg with seq 0x%02x\n", seq);
+		MSG_OUT("Received a dbus response for msg with seq 0x%02x\n",
+				seq);
 
 		ssif_resp_msg.netfn = netfn;
 		ssif_resp_msg.lun = lun;
@@ -369,7 +435,7 @@ static int method_send_message(sd_bus_message *msg, void *userdata, sd_bus_error
 		ssif_resp_msg.cmd = cmd;
 		ssif_resp_msg.cc = cc;
 		ssif_resp_msg.data_len = data_sz;
-		/* Because we've ref'ed the msg, I hope we don't need to memcpy data */
+		/* Because we've ref'ed the msg, don't need to memcpy data */
 		ssif_resp_msg.data = data;
 
 		/* Clear the timer */
@@ -378,12 +444,12 @@ static int method_send_message(sd_bus_message *msg, void *userdata, sd_bus_error
 		ts.it_value.tv_sec = 0;
 		ts.it_value.tv_nsec = 0;
 		r = timerfd_settime(context->fds[TIMER_FD].fd,
-				      TFD_TIMER_ABSTIME,
-				      &ts,
-				      NULL);
+				TFD_TIMER_ABSTIME,
+				&ts,
+				NULL);
 
 		if (r < 0) {
-		    MSG_ERR("Failed to clear timer\n");
+			MSG_ERR("Failed to clear timer\n");
 		}
 
 		r = ssif_send_response(context, &ssif_resp_msg);
@@ -409,7 +475,7 @@ static int dispatch_timer(struct ssifbridged_context *context)
 
 	if (context->fds[TIMER_FD].revents & POLLIN) {
 		if(!context->awaiting_response) {
-			/* Strange, we got a timeout but weren't expecting a response */
+			/* Got a timeout but not expecting a response */
 			MSG_ERR("Timeout but no pending message\n");
 		} else {
 			struct itimerspec ts;
@@ -420,25 +486,31 @@ static int dispatch_timer(struct ssifbridged_context *context)
 			ts.it_value.tv_sec = 0;
 			ts.it_value.tv_nsec = 0;
 			r = timerfd_settime(context->fds[TIMER_FD].fd,
-						TFD_TIMER_ABSTIME,
-						&ts,
-						NULL);
+					TFD_TIMER_ABSTIME,
+					&ts,
+					NULL);
 			if (r < 0) {
 				MSG_ERR("Failed to clear timer\n");
 			}
 
 			MSG_ERR("Timing out message\n");
 
-			/* Add one to the netfn - response netfn is always request netfn + 1 */
+			/* Add one to the netfn - response netfn is always
+			 * request netfn + 1
+			 */
 			context->ssif_pending_msg.netfn += 1;
-			context->ssif_pending_msg.cc = IPMI_CC_CANNOT_PROVIDE_RESP;
+			context->ssif_pending_msg.cc =
+				IPMI_CC_CANNOT_PROVIDE_RESP;
 			context->ssif_pending_msg.data = NULL;
 			context->ssif_pending_msg.data_len = 0;
 
-			r = ssif_send_response(context, &context->ssif_pending_msg);
+			r = ssif_send_response(context,
+					&context->ssif_pending_msg);
 			if (r < 0) {
-				MSG_ERR("Failed to send timeout message (ret: %d, errno: %d)\n",
-											r, errno);
+				MSG_ERR("Failed to send timeout message "
+						"(ret: %d, errno: %d)\n",
+						r,
+						errno);
 			}
 
 			context->awaiting_response = 0;
@@ -478,16 +550,21 @@ static int dispatch_ssif(struct ssifbridged_context *context)
 			return r;
 		}
 		if (r < data[0] + 1) {
-			MSG_ERR("Short read from ssif (%d vs %d)\n", r, data[1] + 2);
+			MSG_ERR("Short read from ssif (%d vs %d)\n",
+					r,
+					data[1] + 2);
 			r = 0;
 			return r;
 		}
 
 		/* Check if response is still awaiting */
 		if (context->awaiting_response) {
-			MSG_ERR("Received SSIF message while awaiting response. Discarding\n");
+			MSG_ERR("Received SSIF message while awaiting response."
+					" Discarding\n");
 		} else {
-			/* Get SSIF request message that sent from kernel space */
+			/* Get SSIF request message that sent from
+			 * kernel space
+			 */
 			req = ssif_msg_create(context, data);
 			context->awaiting_response = 1;
 
@@ -497,23 +574,32 @@ static int dispatch_ssif(struct ssifbridged_context *context)
 				return r;
 			}
 
-			/* Set up the timer. We do this before sending the signal to avoid
-			 * a race condition with the response */
+			/* Set up the timer. We do this before sending
+			 * the signal to avoid a race condition with
+			 * the response
+			 */
 			ts.it_interval.tv_sec = 0;
 			ts.it_interval.tv_nsec = 0;
 			ts.it_value.tv_nsec = 0;
 			ts.it_value.tv_sec = SSIF_BMC_TIMEOUT_SEC;
-			r = timerfd_settime(context->fds[TIMER_FD].fd, 0, &ts, NULL);
+			r = timerfd_settime(context->fds[TIMER_FD].fd,
+					0,
+					&ts,
+					NULL);
 			if (r < 0)
-				MSG_ERR("Failed to set timer (ret: %d, errno: %d)\n",
-									r, errno);
+				MSG_ERR("Failed to set timer (ret: %d, "
+						"errno: %d)\n",
+						r,
+						errno);
 
 			r = send_received_message_signal(context,
-							req,
-							data + 3,
-							req->data_len);
+					req,
+					data + 3,
+					req->data_len);
 			if (r < 0) {
-				MSG_ERR("Failed to send Received Message signal (ret: %d)\n", r);
+				MSG_ERR("Failed to send Received Message "
+						"signal (ret: %d)\n",
+						r);
 			}
 		}
 	}
@@ -524,19 +610,29 @@ static int dispatch_ssif(struct ssifbridged_context *context)
 static void usage(const char *name)
 {
 	fprintf(stderr, "\
-Usage %s [--v[v] | --syslog] [-d <DEVICE>]\n\
-  --v                    Be verbose\n\
-  --vv                   Be verbose and dump entire messages\n\
-  -s, --syslog           Log output to syslog (pointless without --verbose)\n\
-  -d, --device <DEVICE>  use <DEVICE> file. Default is '%s'\n\n",
-		name, ssif_bmc_device);
+ Usage %s [--v[v] | --syslog] [-d <DEVICE>]\n\
+ --v                    Be verbose\n\
+ --vv                   Be verbose and dump entire messages\n\
+ -s, --syslog           Log output to syslog (pointless without --verbose)\n\
+ -d, --device <DEVICE>  use <DEVICE> file. Default is '%s'\n\n",
+ name, ssif_bmc_device);
 }
 
 static const sd_bus_vtable ipmid_vtable[] = {
 	SD_BUS_VTABLE_START(0),
-	SD_BUS_METHOD("sendMessage", "yyyyyay", "x", &method_send_message, SD_BUS_VTABLE_UNPRIVILEGED),
-	SD_BUS_METHOD("setAttention", "", "x", &method_send_sms_atn, SD_BUS_VTABLE_UNPRIVILEGED),
-	SD_BUS_SIGNAL("ReceivedMessage", "yyyyay", 0),
+	SD_BUS_METHOD("sendMessage",
+			"yyyyyay",
+			"x",
+			&method_send_message,
+			SD_BUS_VTABLE_UNPRIVILEGED),
+	SD_BUS_METHOD("setAttention",
+			"",
+			"x",
+			&method_send_sms_atn,
+			SD_BUS_VTABLE_UNPRIVILEGED),
+	SD_BUS_SIGNAL("ReceivedMessage",
+			"yyyyay",
+			0),
 	SD_BUS_VTABLE_END
 };
 
@@ -591,18 +687,19 @@ int main(int argc, char *argv[]) {
 
 	MSG_OUT("Registering dbus methods/signals\n");
 	r = sd_bus_add_object_vtable(context->bus,
-	                             NULL,
-	                             OBJ_NAME,
-	                             DBUS_NAME,
-	                             ipmid_vtable,
-	                             context);
+			NULL,
+			OBJ_NAME,
+			DBUS_NAME,
+			ipmid_vtable,
+			context);
 	if (r < 0) {
 		MSG_ERR("Failed to issue method call: %s\n", strerror(-r));
 		goto finish;
 	}
 
 	MSG_OUT("Requesting dbus name: %s\n", DBUS_NAME);
-	r = sd_bus_request_name(context->bus, DBUS_NAME, SD_BUS_NAME_ALLOW_REPLACEMENT|SD_BUS_NAME_REPLACE_EXISTING);
+	r = sd_bus_request_name(context->bus, DBUS_NAME,
+		SD_BUS_NAME_ALLOW_REPLACEMENT | SD_BUS_NAME_REPLACE_EXISTING);
 	if (r < 0) {
 		MSG_ERR("Failed to acquire service name: %s\n", strerror(-r));
 		goto finish;
@@ -612,7 +709,8 @@ int main(int argc, char *argv[]) {
 	context->fds[SD_BUS_FD].fd = sd_bus_get_fd(context->bus);
 	if (context->fds[SD_BUS_FD].fd < 0) {
 		r = -errno;
-		MSG_OUT("Couldn't get the bus file descriptor: %s\n", strerror(errno));
+		MSG_OUT("Couldn't get the bus file descriptor: %s\n",
+				strerror(errno));
 		goto finish;
 	}
 
@@ -620,7 +718,9 @@ int main(int argc, char *argv[]) {
 	context->fds[SSIF_FD].fd = open(SSIF_BMC_PATH, O_RDWR | O_NONBLOCK);
 	if (context->fds[SSIF_FD].fd < 0) {
 		r = -errno;
-		MSG_ERR("Couldn't open %s with flags O_RDWR: %s\n", SSIF_BMC_PATH, strerror(errno));
+		MSG_ERR("Couldn't open %s with flags O_RDWR: %s\n",
+				SSIF_BMC_PATH,
+				strerror(errno));
 		goto finish;
 	}
 
@@ -643,22 +743,26 @@ int main(int argc, char *argv[]) {
 			continue;
 		if (polled < 0) {
 			r = -errno;
-			MSG_ERR("Error from poll(): %s\n", strerror(errno));
+			MSG_ERR("Error from poll(): %s\n",
+					strerror(errno));
 			goto finish;
 		}
 		r = dispatch_sd_bus(context);
 		if (r < 0) {
-			MSG_ERR("Error handling dbus event: %s\n", strerror(-r));
+			MSG_ERR("Error handling dbus event: %s\n",
+					strerror(-r));
 			goto finish;
 		}
 		r = dispatch_ssif(context);
 		if (r < 0) {
-			MSG_ERR("Error handling SSIF event: %s\n", strerror(-r));
+			MSG_ERR("Error handling SSIF event: %s\n",
+					strerror(-r));
 			goto finish;
 		}
 		r = dispatch_timer(context);
 		if (r < 0) {
-			MSG_ERR("Error handling timer event: %s\n", strerror(-r));
+			MSG_ERR("Error handling timer event: %s\n",
+					strerror(-r));
 			goto finish;
 		}
 	}
