@@ -271,8 +271,6 @@ static int ssif_send_response(struct ssifbridged_context *context,
 {
 	uint8_t data[SSIF_MAX_RESP_LEN] = { 0 };
 	int r = 0;
-	int block_data_len = 0;
-	int is_multi_parts = 0;
 	int len = 0;
 
 	assert(context);
@@ -280,60 +278,22 @@ static int ssif_send_response(struct ssifbridged_context *context,
 	if (!ssif_resp_msg)
 		return -EINVAL;
 
-	/* Handle response message to fit multi-parts read/write */
-	if (ssif_resp_msg->data_len <= 29) {
-		is_multi_parts = 0;
-		MSG_OUT("Response is Single-part with len %d\n",
+	/* netfn/lun + cmd + cc = 3 */
+	data[0] = ssif_resp_msg->data_len + 3;
+
+	/* Copy response message to data buffer */
+	if (ssif_resp_msg->data_len)
+		memcpy(data + 4, ssif_resp_msg->data, ssif_resp_msg->data_len);
+
+	/* Prepare Header */
+	data[1] = (ssif_resp_msg->netfn << 2) |
+		(ssif_resp_msg->lun & 0x3);
+	data[2] = ssif_resp_msg->cmd;
+	data[3] = ssif_resp_msg->cc;
+	if (ssif_resp_msg->data_len > sizeof(data) - 4) {
+		MSG_ERR("Response message size (%zu) too big, truncating\n",
 				ssif_resp_msg->data_len);
-	} else {
-		is_multi_parts = 1;
-		MSG_OUT("Response is Multi-parts with len %d\n",
-				ssif_resp_msg->data_len);
-	}
-
-	/* Handle Single-part response */
-	if (!is_multi_parts) {
-		/* netfn/lun + cmd + cc = 3 */
-		data[0] = ssif_resp_msg->data_len + 3;
-
-		/* Copy response message to data buffer */
-		if (ssif_resp_msg->data_len)
-			memcpy(data + 4, ssif_resp_msg->data,
-					ssif_resp_msg->data_len);
-
-		/* Prepare Header */
-		data[1] = (ssif_resp_msg->netfn << 2) |
-			(ssif_resp_msg->lun & 0x3);
-		data[2] = ssif_resp_msg->cmd;
-		data[3] = ssif_resp_msg->cc;
-		if (ssif_resp_msg->data_len > sizeof(data) - 4) {
-			MSG_ERR("Response message size (%zu) too big, "
-					"truncating\n",
-					ssif_resp_msg->data_len);
-			ssif_resp_msg->data_len = sizeof(data) - 4;
-		}
-	} else {
-		/* Handle Multi-parts response */
-		/* Payload for multi-part Read Start
-		 * Per IPMI 2.0 specs, read start have to handle maximum
-		 * 32 bytes data payload
-		 * Special code (00h + 01h) + netfn/lun + cmd + cc +
-		 *                                              IPMI data = 32
-		 */
-		data[0] = 32;
-		/* Prepare Header */
-		data[1] = 0x00; /* Special code */
-		data[2] = 0x01; /* Special code */
-		data[3] = (ssif_resp_msg->netfn << 2) |
-			(ssif_resp_msg->lun & 0x3);
-		data[4] = ssif_resp_msg->cmd;
-		data[5] = ssif_resp_msg->cc;
-
-		block_data_len = data[0] - 5;
-		/* Copy response message to data buffer */
-		memcpy(data + 6, ssif_resp_msg->data, block_data_len);
-
-		/* TODO: Handle Middle and End Part */
+		ssif_resp_msg->data_len = sizeof(data) - 4;
 	}
 
 	/* Write data kernel space via system calls */
